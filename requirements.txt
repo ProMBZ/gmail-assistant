@@ -5,4 +5,4 @@ langchain
 langchain-google-genai
 python-dotenv
 streamlit-extras
-streamlit-autofresh
+streamlit-autorefresh
