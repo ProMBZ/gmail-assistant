@@ -1,13 +1,11 @@
 import os
+import base64
 import streamlit as st
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from email.mime.text import MIMEText
-import base64
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
-import time
-import winsound
 from streamlit_autorefresh import st_autorefresh
 
 # Load environment variables
@@ -18,10 +16,10 @@ st.set_page_config(page_title="AI Email Assistant", page_icon="📬")
 st.title("📬 AI Email Assistant")
 st.write("Summarize unread emails, draft smart replies, and send them instantly with Gemini AI.")
 
-# Auto-refresh every 5 minutes (300,000 ms)
+# Auto-refresh every 5 minutes
 count = st_autorefresh(interval=300000, key="email_checker")
 
-# Initialize Gemini LLM
+# Gemini setup
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash-exp",
     api_key=os.getenv("GEMINI_API_KEY")
@@ -38,7 +36,7 @@ def authenticate_gmail():
     service = build('gmail', 'v1', credentials=creds)
     return service
 
-# Get unread emails (latest first)
+# Get unread emails
 def get_unread_emails(service):
     result = service.users().messages().list(userId='me', labelIds=['INBOX'], q='is:unread', maxResults=5).execute()
     messages = result.get('messages', [])[::-1]  # Reverse to show latest first
@@ -71,13 +69,12 @@ def generate_reply(snippet, user_instruction):
     response = llm.invoke(prompt)
     return response.content if hasattr(response, 'content') else str(response)
 
-# Get or create label "Replied"
+# Get or create label
 def get_or_create_label(service, label_name="Replied"):
     labels = service.users().labels().list(userId='me').execute().get('labels', [])
     for label in labels:
         if label['name'].lower() == label_name.lower():
             return label['id']
-
     label_body = {
         "name": label_name,
         "labelListVisibility": "labelShow",
@@ -86,7 +83,7 @@ def get_or_create_label(service, label_name="Replied"):
     new_label = service.users().labels().create(userId='me', body=label_body).execute()
     return new_label['id']
 
-# Send reply via Gmail and label it as replied
+# Send email
 def send_email(service, to, subject, message_text, thread_id=None):
     message = MIMEText(message_text)
     message['to'] = to
@@ -94,25 +91,20 @@ def send_email(service, to, subject, message_text, thread_id=None):
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     body = {'raw': raw, 'threadId': thread_id} if thread_id else {'raw': raw}
     sent_message = service.users().messages().send(userId='me', body=body).execute()
-
     replied_label_id = get_or_create_label(service, "Replied")
     service.users().messages().modify(userId='me', id=sent_message['id'], body={'addLabelIds': [replied_label_id]}).execute()
     return sent_message
 
-# Auto-check and notify for new emails
+# Start Gmail service
+gmail_service = authenticate_gmail()
+
+# Email Checking and Display
 if 'last_checked_count' not in st.session_state:
     st.session_state['last_checked_count'] = 0
 
 try:
-    service = authenticate_gmail()
-    unread_emails = get_unread_emails(service)
+    unread_emails = get_unread_emails(gmail_service)
     current_count = len(unread_emails)
-
-    if current_count > st.session_state['last_checked_count']:
-        winsound.MessageBeep()  # <-- Simple Windows beep here
-        st.balloons()
-        st.toast("📬 New email received!")
-
     st.session_state['emails'] = unread_emails
     st.session_state['emails_loaded'] = True
     st.session_state['last_checked_count'] = current_count
@@ -120,7 +112,6 @@ try:
 except Exception as e:
     st.error(f"Error during auto-check: {e}")
 
-# Main UI Logic
 emails = st.session_state.get('emails', [])
 if not emails:
     st.success("No unread emails found.")
@@ -149,7 +140,7 @@ else:
         with col1:
             if st.button(f"✅ Send This Reply for Email #{i+1}", key=f"send_{i}"):
                 to_email = email['sender'].split('<')[-1].replace('>', '') if '<' in email['sender'] else email['sender']
-                send_email(service, to_email, email['subject'], updated_reply, thread_id=email['thread_id'])
+                send_email(gmail_service, to_email, email['subject'], updated_reply, thread_id=email['thread_id'])
                 st.success(f"Custom reply sent to {to_email} ✨")
                 st.session_state[f"sent_{i}"] = True
         with col2:
