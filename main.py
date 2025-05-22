@@ -49,7 +49,6 @@ def build_service(creds):
     return build('gmail', 'v1', credentials=creds)
 
 def authenticate_manual():
-    # If flow not yet started, create it and get auth URL
     if st.session_state.flow is None:
         flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
         auth_url, _ = flow.authorization_url(prompt='consent')
@@ -69,10 +68,12 @@ def authenticate_manual():
             st.session_state.creds = creds
             st.session_state.service = build_service(creds)
             st.success("✅ Gmail connected successfully!")
-            # Reset auth state so UI updates to inbox
+
+            # Reset auth flow state so button logic updates correctly
             st.session_state.auth_url = None
             st.session_state.flow = None
             st.session_state.auth_started = False
+
             st.experimental_rerun()
             return True
         except Exception as e:
@@ -153,11 +154,13 @@ if not st.session_state.creds:
         st.session_state.creds = creds
         st.session_state.service = build_service(creds)
 
-if not st.session_state.creds and not st.session_state.auth_started:
+# Show "Connect Gmail" button if creds are missing
+if not st.session_state.creds:
     if st.button("🔗 Connect Gmail"):
         st.session_state.auth_started = True
         st.experimental_rerun()
 
+# If auth flow started, show authentication UI
 if st.session_state.auth_started:
     authenticate_manual()
 
