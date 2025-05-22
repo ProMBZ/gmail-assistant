@@ -28,7 +28,7 @@ if 'flow' not in st.session_state:
     st.session_state.flow = None
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-exp",
+    model="gemini-2.0-flash",
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
@@ -52,8 +52,8 @@ def authenticate_manual():
     st.session_state.auth_url = auth_url
     st.session_state.flow = flow
 
-    st.info("1️⃣ Click the link below (or copy & paste) to open Google login page:")
-    st.markdown(f"[Authorize Gmail Access]({auth_url})", unsafe_allow_html=True)
+    st.info("1️⃣ Click the link below to authorize your Gmail access (opens in a new tab):")
+    st.markdown(f'<a href="{st.session_state.auth_url}" target="_blank" rel="noopener noreferrer">Authorize Gmail Access</a>', unsafe_allow_html=True)
     st.write("2️⃣ After signing in, copy the authorization code you receive.")
 
     code = st.text_input("Paste the authorization code here:")
