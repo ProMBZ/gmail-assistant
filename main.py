@@ -21,19 +21,18 @@ st.set_page_config(page_title="📬 AI Email Assistant", page_icon="📬")
 st.title("📬 AI Email Assistant")
 st.write("Summarize unread emails, draft smart replies, and send them instantly with Gemini AI.")
 
-# --- Session state initialization ---
+# --- Session state ---
 for key in ['creds', 'service', 'auth_url', 'flow', 'auth_started']:
     if key not in st.session_state:
         st.session_state[key] = None if key != 'auth_started' else False
 
-# --- Gemini LLM setup ---
+# --- Gemini setup ---
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash",
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-# --- Helper Functions ---
-
+# --- Helpers ---
 def save_creds(creds):
     with open('token.pickle', 'wb') as token_file:
         pickle.dump(creds, token_file)
@@ -60,7 +59,7 @@ def authenticate_manual():
 
         st.info("1️⃣ Click the link below to authorize Gmail access:")
         st.markdown(f"[Authorize Gmail Access]({st.session_state.auth_url})", unsafe_allow_html=True)
-        code = st.text_input("Paste authorization code here:")
+        code = st.text_input("Paste the authorization code here:")
 
         if code:
             st.session_state.flow.fetch_token(code=code)
@@ -130,7 +129,7 @@ def send_email(service, to, subject, body, thread_id=None):
     label_id = get_or_create_label(service, "Replied")
     service.users().threads().modify(userId='me', id=thread_id, body={'addLabelIds': [label_id]}).execute()
 
-# --- Load or Refresh Credentials ---
+# --- Load creds ---
 creds = load_creds()
 if creds_valid(creds):
     st.session_state.creds = creds
@@ -141,19 +140,16 @@ elif creds and creds.expired and creds.refresh_token:
     st.session_state.creds = creds
     st.session_state.service = build_service(creds)
 
-# --- Gmail Connection UI ---
-# Always show the button if not authenticated
+# --- UI Auth ---
 if not creds_valid(st.session_state.creds):
     st.info("To begin, connect your Gmail account.")
     if st.button("🔗 Connect Gmail"):
         st.session_state.auth_started = True
 
-# If button was clicked, start manual auth
 if st.session_state.auth_started and not st.session_state.creds:
     authenticate_manual()
 
-
-# --- Main App UI ---
+# --- Main UI ---
 if st.session_state.creds:
     service = st.session_state.service
     emails = get_unread_emails(service)
