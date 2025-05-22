@@ -1,54 +1,86 @@
 import os
-import base64
-import json
 import streamlit as st
-from google.oauth2 import service_account
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+import pickle
 from email.mime.text import MIMEText
+import base64
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
-from streamlit_autorefresh import st_autorefresh
 
-# Load .env locally, but on Streamlit cloud secrets are better
 load_dotenv()
+
+SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
 st.set_page_config(page_title="AI Email Assistant", page_icon="📬")
 st.title("📬 AI Email Assistant")
 st.write("Summarize unread emails, draft smart replies, and send them instantly with Gemini AI.")
 
-st_autorefresh(interval=300000, key="email_checker")
+# Initialize session state keys
+if 'creds' not in st.session_state:
+    st.session_state.creds = None
+if 'service' not in st.session_state:
+    st.session_state.service = None
+if 'auth_url' not in st.session_state:
+    st.session_state.auth_url = None
+if 'flow' not in st.session_state:
+    st.session_state.flow = None
 
-# Gemini LLM setup
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash-exp",
-    api_key=st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    api_key=os.getenv("GEMINI_API_KEY")
 )
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+def save_creds(creds):
+    with open('token.pickle', 'wb') as token_file:
+        pickle.dump(creds, token_file)
 
-@st.cache_resource(show_spinner=False)
-def authenticate_gmail():
-    try:
-        # Load service account JSON key from secrets
-        service_account_info = json.loads(st.secrets["google"]["service_account_key"])
-        creds = service_account.Credentials.from_service_account_info(
-            service_account_info, scopes=SCOPES
-        )
-        # Impersonate user if needed:
-        # creds = creds.with_subject("user-email@example.com")
+def load_creds():
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token_file:
+            creds = pickle.load(token_file)
+            return creds
+    return None
 
-        service = build("gmail", "v1", credentials=creds)
-        return service
-    except Exception as e:
-        st.error(f"Failed to authenticate Gmail: {e}")
-        return None
+def build_service(creds):
+    return build('gmail', 'v1', credentials=creds)
+
+def authenticate_manual():
+    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+    auth_url, _ = flow.authorization_url(prompt='consent')
+    st.session_state.auth_url = auth_url
+    st.session_state.flow = flow
+
+    st.info("1️⃣ Click the link below (or copy & paste) to open Google login page:")
+    st.markdown(f"[Authorize Gmail Access]({auth_url})", unsafe_allow_html=True)
+    st.write("2️⃣ After signing in, copy the authorization code you receive.")
+
+    code = st.text_input("Paste the authorization code here:")
+    if code:
+        try:
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            save_creds(creds)
+            st.session_state.creds = creds
+            st.session_state.service = build_service(creds)
+            st.success("✅ Gmail connected successfully!")
+            st.session_state.auth_url = None
+            st.session_state.flow = None
+            return True
+        except Exception as e:
+            st.error(f"Failed to fetch token: {e}")
+            return False
+    return False
 
 def get_unread_emails(service):
     result = service.users().messages().list(userId='me', labelIds=['INBOX'], q='is:unread', maxResults=5).execute()
-    messages = result.get('messages', [])[::-1]
-    emails = []
+    messages = result.get('messages', [])
+    if not messages:
+        return []
 
-    for msg in messages:
+    emails = []
+    for msg in reversed(messages):
         data = service.users().messages().get(userId='me', id=msg['id']).execute()
         headers = data['payload']['headers']
         subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
@@ -56,8 +88,9 @@ def get_unread_emails(service):
         snippet = data.get('snippet', '')
         thread_id = data.get('threadId')
 
-        # Mark email as read
+        # Mark as read
         service.users().messages().modify(userId='me', id=msg['id'], body={'removeLabelIds': ['UNREAD']}).execute()
+
         emails.append({'id': msg['id'], 'thread_id': thread_id, 'subject': subject, 'sender': sender, 'snippet': snippet})
 
     return emails
@@ -92,32 +125,40 @@ def send_email(service, to, subject, message_text, thread_id=None):
     message['to'] = to
     message['subject'] = "Re: " + subject
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    body = {'raw': raw, 'threadId': thread_id} if thread_id else {'raw': raw}
+    body = {'raw': raw}
+    if thread_id:
+        body['threadId'] = thread_id
     sent_message = service.users().messages().send(userId='me', body=body).execute()
+
     replied_label_id = get_or_create_label(service, "Replied")
     service.users().messages().modify(userId='me', id=sent_message['id'], body={'addLabelIds': [replied_label_id]}).execute()
     return sent_message
 
-gmail_service = authenticate_gmail()
+# Load creds from disk on app start
+if not st.session_state.creds:
+    creds = load_creds()
+    if creds and creds.valid:
+        st.session_state.creds = creds
+        st.session_state.service = build_service(creds)
+    elif creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        save_creds(creds)
+        st.session_state.creds = creds
+        st.session_state.service = build_service(creds)
 
-if gmail_service:
-    if 'last_checked_count' not in st.session_state:
-        st.session_state['last_checked_count'] = 0
-
+if not st.session_state.creds:
+    if st.button("🔗 Connect Gmail"):
+        authenticate_manual()
+else:
+    service = st.session_state.service
     try:
-        unread_emails = get_unread_emails(gmail_service)
-        current_count = len(unread_emails)
-        st.session_state['emails'] = unread_emails
-        st.session_state['emails_loaded'] = True
-        st.session_state['last_checked_count'] = current_count
-    except Exception as e:
-        st.error(f"Error during email fetch: {e}")
+        unread_emails = get_unread_emails(service)
+        if unread_emails:
+            st.success(f"You have {len(unread_emails)} unread emails!")
+        else:
+            st.info("No unread emails found.")
 
-    emails = st.session_state.get('emails', [])
-    if not emails:
-        st.success("No unread emails found.")
-    else:
-        for i, email in enumerate(emails):
+        for i, email in enumerate(unread_emails):
             st.divider()
             st.subheader(f"📧 Email #{i+1}: {email['subject']}")
             st.write(f"**From:** {email['sender']}")
@@ -125,46 +166,33 @@ if gmail_service:
 
             if f"summary_{i}" not in st.session_state:
                 st.session_state[f"summary_{i}"] = summarize_email(email['snippet'])
-
             st.success("Summary:")
             st.markdown(st.session_state[f"summary_{i}"])
 
-            user_details = st.text_input(f"Your Name, Role, or Company (Email #{i+1})", key=f"details_{i}")
-            user_instruction = st.text_area(
-                f"Instruction for Gemini (Email #{i+1})",
-                value="Write a polite and relevant reply to this email.",
-                key=f"instruction_{i}"
-            )
+            user_details = st.text_input(f"Your name/role/company for Email #{i+1}", key=f"details_{i}")
+            user_instruction = st.text_area(f"Instructions for reply (Email #{i+1})", value="Write a polite and relevant reply to this email.", key=f"instruction_{i}")
 
             if f"reply_{i}" not in st.session_state:
-                enhanced_prompt = f"{user_instruction}\n\nHere is the user's detail for context: {user_details}"
+                enhanced_prompt = f"{user_instruction}\n\nUser details: {user_details}"
                 st.session_state[f"reply_{i}"] = generate_reply(email['snippet'], enhanced_prompt)
 
-            updated_reply = st.text_area(
-                "Edit the reply before sending:",
-                value=st.session_state[f"reply_{i}"],
-                height=200,
-                key=f"replybox_{i}"
-            )
+            updated_reply = st.text_area("Edit reply before sending:", value=st.session_state[f"reply_{i}"], height=200, key=f"replybox_{i}")
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3 = st.columns([1,1,1])
             with col1:
-                if st.button(f"✅ Send Reply #{i+1}", key=f"send_{i}"):
+                if st.button(f"✅ Send Reply Email #{i+1}", key=f"send_{i}"):
                     to_email = email['sender'].split('<')[-1].replace('>', '') if '<' in email['sender'] else email['sender']
-                    send_email(gmail_service, to_email, email['subject'], updated_reply, thread_id=email['thread_id'])
-                    st.success(f"Custom reply sent to {to_email} ✨")
-                    st.session_state[f"sent_{i}"] = True
-
+                    send_email(service, to_email, email['subject'], updated_reply, thread_id=email['thread_id'])
+                    st.success(f"Reply sent to {to_email}!")
             with col2:
                 if st.button(f"⏭️ Skip Email #{i+1}", key=f"skip_{i}"):
-                    st.session_state[f"skipped_{i}"] = True
-                    st.info(f"Skipped Email #{i+1} ✉️")
-
+                    st.info(f"Skipped Email #{i+1}")
             with col3:
-                if st.button(f"🔄 Refresh Email #{i+1}", key=f"refresh_{i}"):
+                if st.button(f"🔄 Refresh Reply #{i+1}", key=f"refresh_{i}"):
                     st.session_state[f"summary_{i}"] = summarize_email(email['snippet'])
-                    enhanced_prompt = f"{user_instruction}\n\nHere is the user's detail for context: {user_details}"
+                    enhanced_prompt = f"{user_instruction}\n\nUser details: {user_details}"
                     st.session_state[f"reply_{i}"] = generate_reply(email['snippet'], enhanced_prompt)
                     st.success("Reply regenerated.")
-else:
-    st.stop()
+
+    except Exception as e:
+        st.error(f"Error fetching emails or sending replies: {e}")
