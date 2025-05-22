@@ -21,18 +21,22 @@ st.set_page_config(page_title="📬 AI Email Assistant", page_icon="📬")
 st.title("📬 AI Email Assistant")
 st.write("Summarize unread emails, draft smart replies, and send them instantly with Gemini AI.")
 
-# --- Session state ---
-for key in ['creds', 'service', 'auth_url', 'flow', 'auth_started']:
+# --- Session state initialization ---
+for key in ['creds', 'service', 'auth_url', 'flow', 'auth_started', 'auth_done']:
     if key not in st.session_state:
-        st.session_state[key] = None if key != 'auth_started' else False
+        if key == 'auth_started' or key == 'auth_done':
+            st.session_state[key] = False
+        else:
+            st.session_state[key] = None
 
-# --- Gemini setup ---
+# --- Gemini LLM setup ---
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash",
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-# --- Helpers ---
+# --- Helper Functions ---
+
 def save_creds(creds):
     with open('token.pickle', 'wb') as token_file:
         pickle.dump(creds, token_file)
@@ -59,16 +63,17 @@ def authenticate_manual():
 
         st.info("1️⃣ Click the link below to authorize Gmail access:")
         st.markdown(f"[Authorize Gmail Access]({st.session_state.auth_url})", unsafe_allow_html=True)
-        code = st.text_input("Paste the authorization code here:")
+        code = st.text_input("Paste authorization code here:")
 
-        if code:
+        if code and not st.session_state.auth_done:
             st.session_state.flow.fetch_token(code=code)
             creds = st.session_state.flow.credentials
             save_creds(creds)
             st.session_state.creds = creds
             st.session_state.service = build_service(creds)
             st.success("✅ Gmail connected successfully!")
-            st.experimental_rerun()
+            st.session_state.auth_done = True
+            # Instead of rerun, just show a button to continue
     except Exception as e:
         st.error(f"Authentication failed: {e}")
 
@@ -122,14 +127,18 @@ def send_email(service, to, subject, body, thread_id=None):
     message['subject'] = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-    msg_body = {'raw': raw, 'threadId': thread_id}
+    msg_body = {'raw': raw}
+    if thread_id:
+        msg_body['threadId'] = thread_id
+
     service.users().messages().send(userId='me', body=msg_body).execute()
 
-    service.users().threads().modify(userId='me', id=thread_id, body={'removeLabelIds': ['UNREAD']}).execute()
-    label_id = get_or_create_label(service, "Replied")
-    service.users().threads().modify(userId='me', id=thread_id, body={'addLabelIds': [label_id]}).execute()
+    if thread_id:
+        service.users().threads().modify(userId='me', id=thread_id, body={'removeLabelIds': ['UNREAD']}).execute()
+        label_id = get_or_create_label(service, "Replied")
+        service.users().threads().modify(userId='me', id=thread_id, body={'addLabelIds': [label_id]}).execute()
 
-# --- Load creds ---
+# --- Load or Refresh Credentials ---
 creds = load_creds()
 if creds_valid(creds):
     st.session_state.creds = creds
@@ -140,17 +149,22 @@ elif creds and creds.expired and creds.refresh_token:
     st.session_state.creds = creds
     st.session_state.service = build_service(creds)
 
-# --- UI Auth ---
+# --- Gmail Connection UI ---
 if not creds_valid(st.session_state.creds):
     st.info("To begin, connect your Gmail account.")
     if st.button("🔗 Connect Gmail"):
         st.session_state.auth_started = True
 
-if st.session_state.auth_started and not st.session_state.creds:
+if st.session_state.auth_started and not creds_valid(st.session_state.creds):
     authenticate_manual()
+    if st.session_state.auth_done:
+        if st.button("▶️ Continue to App"):
+            # Reset auth state so app loads emails
+            st.session_state.auth_started = False
+            st.experimental_rerun()
 
-# --- Main UI ---
-if st.session_state.creds:
+# --- Main App UI ---
+if creds_valid(st.session_state.creds):
     service = st.session_state.service
     emails = get_unread_emails(service)
     if emails:
@@ -186,8 +200,10 @@ if st.session_state.creds:
                 if st.button("🔄 Refresh Reply", key=f"refresh_{email['id']}"):
                     prompt_text = f"{instruction}\n\nDetails: {user_details}"
                     st.session_state[reply_key] = generate_reply(email['snippet'], prompt_text)
+                    st.experimental_rerun()
             with col3:
-                if st.button("⏭️ Skip", key=f"skip_{email['id']}"):
-                    st.info("Skipped.")
+                if st.button("❌ Clear Reply", key=f"clear_{email['id']}"):
+                    st.session_state[reply_key] = ""
+                    st.experimental_rerun()
     else:
-        st.info("No unread emails.")
+        st.info("No unread emails found.")
