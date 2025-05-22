@@ -142,13 +142,16 @@ elif creds and creds.expired and creds.refresh_token:
     st.session_state.service = build_service(creds)
 
 # --- Gmail Connection UI ---
-if st.session_state.creds is None:
+# Always show the button if not authenticated
+if not creds_valid(st.session_state.creds):
+    st.info("To begin, connect your Gmail account.")
     if st.button("🔗 Connect Gmail"):
         st.session_state.auth_started = True
-        st.experimental_rerun()
 
-if st.session_state.auth_started:
+# If button was clicked, start manual auth
+if st.session_state.auth_started and not st.session_state.creds:
     authenticate_manual()
+
 
 # --- Main App UI ---
 if st.session_state.creds:
