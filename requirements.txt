@@ -1,8 +1,6 @@
 streamlit
+google-auth
 google-auth-oauthlib
 google-api-python-client
-langchain
 langchain-google-genai
 python-dotenv
-streamlit-extras
-streamlit-autorefresh
