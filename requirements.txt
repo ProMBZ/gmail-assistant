@@ -2,5 +2,5 @@ streamlit
 google-auth
 google-auth-oauthlib
 google-api-python-client
-langchain-google-genai
 python-dotenv
+langchain-google-genai
