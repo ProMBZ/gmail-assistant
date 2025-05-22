@@ -1,64 +1,48 @@
 import os
 import base64
+import json
 import streamlit as st
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from email.mime.text import MIMEText
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 
-# Load environment variables
+# Load .env locally, but on Streamlit cloud secrets are better
 load_dotenv()
 
-# Streamlit UI Setup
 st.set_page_config(page_title="AI Email Assistant", page_icon="📬")
 st.title("📬 AI Email Assistant")
 st.write("Summarize unread emails, draft smart replies, and send them instantly with Gemini AI.")
 
-# Auto-refresh every 5 minutes
 st_autorefresh(interval=300000, key="email_checker")
 
 # Gemini LLM setup
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash-exp",
-    api_key=os.getenv("GEMINI_API_KEY")
+    api_key=st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 )
 
-# Gmail API Scope
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
 @st.cache_resource(show_spinner=False)
 def authenticate_gmail():
-    creds = None
-    token_path = "token.json"
+    try:
+        # Load service account JSON key from secrets
+        service_account_info = json.loads(st.secrets["google"]["service_account_key"])
+        creds = service_account.Credentials.from_service_account_info(
+            service_account_info, scopes=SCOPES
+        )
+        # Impersonate user if needed:
+        # creds = creds.with_subject("user-email@example.com")
 
-    # Load token if exists
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        service = build("gmail", "v1", credentials=creds)
+        return service
+    except Exception as e:
+        st.error(f"Failed to authenticate Gmail: {e}")
+        return None
 
-    # If not valid, run login flow
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            try:
-                creds = flow.run_local_server(port=0, open_browser=False)
-                st.warning("Please open the link shown in the terminal and paste the code after authorizing.")
-            except Exception as e:
-                st.error(f"Gmail login failed: {e}")
-                return None
-
-        # Save token
-        with open(token_path, "w") as token:
-            token.write(creds.to_json())
-
-    return build("gmail", "v1", credentials=creds)
-
-# Get unread emails
 def get_unread_emails(service):
     result = service.users().messages().list(userId='me', labelIds=['INBOX'], q='is:unread', maxResults=5).execute()
     messages = result.get('messages', [])[::-1]
@@ -72,6 +56,7 @@ def get_unread_emails(service):
         snippet = data.get('snippet', '')
         thread_id = data.get('threadId')
 
+        # Mark email as read
         service.users().messages().modify(userId='me', id=msg['id'], body={'removeLabelIds': ['UNREAD']}).execute()
         emails.append({'id': msg['id'], 'thread_id': thread_id, 'subject': subject, 'sender': sender, 'snippet': snippet})
 
@@ -113,7 +98,6 @@ def send_email(service, to, subject, message_text, thread_id=None):
     service.users().messages().modify(userId='me', id=sent_message['id'], body={'addLabelIds': [replied_label_id]}).execute()
     return sent_message
 
-# Start Gmail service
 gmail_service = authenticate_gmail()
 
 if gmail_service:
