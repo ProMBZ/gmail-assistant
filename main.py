@@ -18,9 +18,16 @@ st.title("📬 AI Email Assistant")
 st.write("Summarize unread emails, draft smart replies, and send them instantly with Gemini AI.")
 
 # Initialize session state keys
-for key in ['creds', 'service', 'auth_url', 'flow', 'auth_started']:
-    if key not in st.session_state:
-        st.session_state[key] = None if key != 'auth_started' else False
+if 'creds' not in st.session_state:
+    st.session_state.creds = None
+if 'service' not in st.session_state:
+    st.session_state.service = None
+if 'auth_url' not in st.session_state:
+    st.session_state.auth_url = None
+if 'flow' not in st.session_state:
+    st.session_state.flow = None
+if 'auth_started' not in st.session_state:
+    st.session_state.auth_started = False
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash",
@@ -42,14 +49,12 @@ def build_service(creds):
     return build('gmail', 'v1', credentials=creds)
 
 def authenticate_manual():
-    """
-    Shows auth link and input for manual OAuth flow.
-    Returns True if authentication succeeded, False otherwise or None if incomplete.
-    """
+    # If flow not yet started, create it and get auth URL
     if st.session_state.flow is None:
-        st.session_state.flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-        auth_url, _ = st.session_state.flow.authorization_url(prompt='consent')
+        flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+        auth_url, _ = flow.authorization_url(prompt='consent')
         st.session_state.auth_url = auth_url
+        st.session_state.flow = flow
 
     st.info("1️⃣ Click the link below to authorize your Gmail access (opens in a new tab):")
     st.markdown(f'<a href="{st.session_state.auth_url}" target="_blank" rel="noopener noreferrer">Authorize Gmail Access</a>', unsafe_allow_html=True)
@@ -64,14 +69,16 @@ def authenticate_manual():
             st.session_state.creds = creds
             st.session_state.service = build_service(creds)
             st.success("✅ Gmail connected successfully!")
-            # Reset auth flow state
+            # Reset auth state so UI updates to inbox
             st.session_state.auth_url = None
             st.session_state.flow = None
+            st.session_state.auth_started = False
+            st.experimental_rerun()
             return True
         except Exception as e:
             st.error(f"Failed to fetch token: {e}")
             return False
-    return None
+    return False
 
 def get_unread_emails(service):
     result = service.users().messages().list(userId='me', labelIds=['INBOX'], q='is:unread', maxResults=5).execute()
@@ -134,30 +141,27 @@ def send_email(service, to, subject, message_text, thread_id=None):
     service.users().messages().modify(userId='me', id=sent_message['id'], body={'addLabelIds': [replied_label_id]}).execute()
     return sent_message
 
-# Load creds from disk on app start and refresh if needed
+# Load creds from disk on app start
 if not st.session_state.creds:
     creds = load_creds()
-    if creds:
-        if creds.valid:
-            st.session_state.creds = creds
-            st.session_state.service = build_service(creds)
-        elif creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            save_creds(creds)
-            st.session_state.creds = creds
-            st.session_state.service = build_service(creds)
+    if creds and creds.valid:
+        st.session_state.creds = creds
+        st.session_state.service = build_service(creds)
+    elif creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        save_creds(creds)
+        st.session_state.creds = creds
+        st.session_state.service = build_service(creds)
 
-if not st.session_state.creds:
-    if not st.session_state.auth_started:
-        if st.button("🔗 Connect Gmail"):
-            st.session_state.auth_started = True
-    if st.session_state.auth_started:
-        auth_result = authenticate_manual()
-        if auth_result is True:
-            st.session_state.auth_started = False
-        elif auth_result is False:
-            st.session_state.auth_started = False  # Reset on failure, user can retry
-else:
+if not st.session_state.creds and not st.session_state.auth_started:
+    if st.button("🔗 Connect Gmail"):
+        st.session_state.auth_started = True
+        st.experimental_rerun()
+
+if st.session_state.auth_started:
+    authenticate_manual()
+
+if st.session_state.creds:
     service = st.session_state.service
     try:
         unread_emails = get_unread_emails(service)
